@@ -19,7 +19,7 @@ class App(tk.Tk):
         self.geometry("900x605")
         self.minsize(740, 520)
         self.events = queue.Queue()
-        self.endpoint = tk.StringVar(value="opc.tcp://192.168.0.1:4840")
+        self.endpoint = tk.StringVar(value="opc.tcp://127.0.0.1:4840")
         self.mode = tk.StringVar(value="None")
         self.policy = tk.StringVar(value="None")
         self.identity = tk.StringVar(value="Anonymous")
@@ -125,16 +125,13 @@ class App(tk.Tk):
         if self.identity.get() == "Username" and not self.username.get():
             messagebox.showerror("Username required", "Please enter a username.")
             return
-        # Secure OPC UA connections are not yet implemented.
-        # Only SecurityMessageMode=None and SecurityPolicy=None are supported.
-        if self.mode.get() != "None" or self.policy.get() != "None":
+        if (self.mode.get() == "None") != (self.policy.get() == "None"):
             messagebox.showerror(
-            "Secure channel not configured",
-            "Secure OPC UA requires a client certificate and private key.\n"
-            "This version currently supports SecurityMessageMode=None "
-            "and SecurityPolicy=None only."
-        )
-        return
+                "Invalid security combination",
+                "Choose None/None or Sign/SignEncrypt with a non-None security policy.",
+                parent=self,
+            )
+            return
         self.go.configure(state="disabled")
         self.matches = []
         self.namespace_mapping = {}
@@ -144,7 +141,7 @@ class App(tk.Tk):
         self.match_list.set("")
         self.status.set("Starting...")
         self.bar.start(12)
-        config = dict(endpoint=endpoint, identity=self.identity.get(), username=self.username.get(),
+        config = dict(endpoint=endpoint, mode=self.mode.get(), policy=self.policy.get(), identity=self.identity.get(), username=self.username.get(),
                       password=self.password.get(), node_name=self.node_name.get().strip())
         threading.Thread(target=self._worker, args=(config,), daemon=True).start()
 
@@ -152,7 +149,13 @@ class App(tk.Tk):
         try:
             search_server(config, self.events)
         except Exception as exc:
-            self.events.put(("error", f"{type(exc).__name__}: {exc}"))
+            import traceback
+            traceback.print_exc()
+            self.events.put((
+                "error",
+                f"{type(exc).__name__}: {exc}\n\n"
+                "See terminal for the complete traceback.",
+            ))
 
     def _drain(self):
         try:
@@ -162,6 +165,25 @@ class App(tk.Tk):
                     self.status.set(payload)
                 elif kind == "progress":
                     self.status.set(f"Browsing... {payload} nodes visited")
+                elif kind == "trust_request":
+                    # Only the Tk main thread may display dialogs. Always release
+                    # the worker, including if the dialog cannot be displayed.
+                    payload["response"]["decision"] = False
+                    try:
+                        payload["response"]["decision"] = messagebox.askyesno(
+                            "Trust OPC UA server certificate?",
+                            "The server presented a certificate not previously "
+                            "trusted by this tool.\n\n"
+                            f"Server: {payload['server']}\n\n"
+                            "SHA-256 fingerprint:\n"
+                            f"{payload['fingerprint']}\n\n"
+                            "Verify this fingerprint using a trusted channel "
+                            "before approving.\n\n"
+                            "Trust this certificate for future connections?",
+                            parent=self,
+                        )
+                    finally:
+                        payload["signal"].set()
                 elif kind == "done":
                     self.bar.stop()
                     self.go.configure(state="normal")
