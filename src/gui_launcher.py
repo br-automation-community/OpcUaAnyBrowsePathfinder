@@ -62,8 +62,11 @@ class App(tk.Tk):
         ttk.Separator(main).pack(fill="x", pady=12)
         ttk.Label(main, text="Variable lookup", font=("Segoe UI", 14, "bold")).pack(anchor="w")
         # Use a prominent native Tk button instead of the theme-dependent ttk style.
+        buttons = ttk.Frame(main)
+        buttons.pack(anchor="center", pady=(10, 8))
+        #Connect button
         self.go = tk.Button(
-            main,
+            buttons,
             text="Connect",
             width=14,
             command=self._start,
@@ -78,9 +81,10 @@ class App(tk.Tk):
             pady=10,
             cursor="hand2",
         )
-        self.go.pack(anchor="center", pady=(10, 8))
+        self.go.pack(side="left", padx=(0, 8))
+        #Disconnect button
         self.disconnect = tk.Button(
-            main,
+            buttons,
             text="Disconnect",
             width=14,
             command=self._disconnect,
@@ -96,9 +100,9 @@ class App(tk.Tk):
             pady=10,
             cursor="hand2",
         )
-        self.disconnect.pack()
+        self.disconnect.pack(side="left")
         browser = ttk.Frame(main)
-        browser.pack(fill="x", expand=True, pady=6)
+        browser.pack(fill="both", expand=True, pady=6)
         self.tree = ttk.Treeview(browser, columns=("kind",), selectmode="browse", height=6)
         self.tree.heading("#0", text="Browse server — expand folders and select a variable")
         self.tree.heading("kind", text="Node class")
