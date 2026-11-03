@@ -314,144 +314,63 @@ def _configure_security(client, config, events):
     ))
 
 
-def search_server(config, events):
-    """Connect and search the server address space for variables."""
+class BrowserSession:
+    """Own the connection on one worker thread; serve lazy browse requests."""
 
-    from asyncua.sync import Client
-    from asyncua import ua
+    def __init__(self, config, commands, events):
+        self.config, self.commands, self.events = config, commands, events
 
-    client = Client(
-        config["endpoint"],
-        timeout=10,
-    )
+    def run(self):
+        import traceback
+        from asyncua.sync import Client
+        from asyncua import ua
 
-    try:
-        # Configure user authentication.
-        if config["identity"] == "Username":
-            client.set_user(config["username"])
-            client.set_password(config["password"])
-
-        # Configure security before connecting.
-        _configure_security(
-            client,
-            config,
-            events,
-        )
-
-        events.put((
-            "status",
-            "Connecting to OPC UA server...",
-        ))
-
-        client.connect()
-
-        events.put((
-            "status",
-            "Connected. Reading namespace URIs...",
-        ))
-
-        namespace_uris = client.get_namespace_array()
-
-        # Begin recursive browsing under the Objects folder.
-        root = client.nodes.objects
-
-        paths = deque([
-            (root, ROOT_PREFIX),
-        ])
-
-        visited = set()
-        matches = []
-
-        count = 0
-        errors = 0
-
-        while paths:
-            node, segments = paths.popleft()
-
-            nodeid = node.nodeid.to_string()
-
-            if nodeid in visited:
-                continue
-
-            visited.add(nodeid)
-            count += 1
-
-            if count % 20 == 0:
-                events.put((
-                    "progress",
-                    count,
-                ))
-
-            try:
-                children = node.get_children()
-            except Exception:
-                errors += 1
-                continue
-
-            for child in children:
-                try:
-                    browse_name = (
-                        child.read_browse_name()
-                    )
-
-                    child_segments = segments + (
-                        (
-                            browse_name.NamespaceIndex,
-                            browse_name.Name,
-                        ),
-                    )
-
-                    # Compare exact BrowseName.
-                    if (
-                        browse_name.Name
-                        == config["node_name"]
-                        and child.read_node_class()
-                        == ua.NodeClass.Variable
-                    ):
-                        variant = (
-                            child.read_data_type_as_variant_type()
-                        )
-
-                        br_type = UA_TO_BR.get(
-                            variant.name,
-                            f"Unsupported ({variant.name})",
-                        )
-
-                        matches.append((
-                            child.nodeid.to_string(),
-                            child_segments,
-                            br_type,
-                        ))
-
-                    # Continue recursively searching.
-                    child_id = child.nodeid.to_string()
-
-                    if child_id not in visited:
-                        paths.append((
-                            child,
-                            child_segments,
-                        ))
-
-                except Exception:
-                    errors += 1
-
-        events.put((
-            "progress",
-            count,
-        ))
-
-        events.put((
-            "done",
-            (
-                namespace_uris,
-                matches,
-                count,
-                errors,
-            ),
-        ))
-
-    finally:
+        client = Client(self.config["endpoint"], timeout=10)
         try:
-            client.disconnect()
-        except Exception:
-            pass
+            if self.config["identity"] == "Username":
+                client.set_user(self.config["username"])
+                client.set_password(self.config["password"])
+            _configure_security(client, self.config, self.events)
+            self.events.put(("status", "Connecting to OPC UA server..."))
+            client.connect()
+            self.events.put(("connected", (
+                client.get_namespace_array(), client.nodes.objects.nodeid.to_string()
+            )))
+            while True:
+                action, item, nodeid = self.commands.get()
+                if action == "disconnect":
+                    break
+                try:
+                    node = client.get_node(nodeid)
+                    if action == "browse":
+                        children = []
+                        errors = 0
+                        for child in node.get_children(refs=ua.ObjectIds.HierarchicalReferences):
+                            try:
+                                name = child.read_browse_name()
+                                children.append(dict(
+                                    nodeid=child.nodeid.to_string(),
+                                    ns=name.NamespaceIndex, name=name.Name,
+                                    kind=child.read_node_class().name,
+                                ))
+                            except Exception:
+                                errors += 1
+                        self.events.put(("children", (item, children, errors)))
+                    elif action == "select":
+                        variant = node.read_data_type_as_variant_type()
+                        dtype = UA_TO_BR.get(variant.name, f"Unsupported ({variant.name})")
+                        self.events.put(("selected", (item, dtype)))
+                except Exception as exc:
+                    traceback.print_exc()
+                    self.events.put(("operation_error", (action, item, str(exc))))
+        except Exception as exc:
+            traceback.print_exc()
+            self.events.put(("error", f"{type(exc).__name__}: {exc}"))
+        finally:
+            try:
+                client.disconnect()
+            except Exception:
+                import traceback
+                traceback.print_exc()
+            finally:
+                self.events.put(("disconnected", None))

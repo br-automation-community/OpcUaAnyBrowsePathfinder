@@ -8,7 +8,7 @@ import sys
 
 from opcua_browse import (
     SECURITY_MODES, SECURITY_POLICIES,
-    escape_browse_name, validate_endpoint, search_server,
+    escape_browse_name, validate_endpoint, BrowserSession, ROOT_PREFIX,
 )
 
 class App(tk.Tk):
@@ -16,8 +16,8 @@ class App(tk.Tk):
         super().__init__()
         self.iconbitmap(str(resource_path("assets/ASImage.ico")))
         self.title("B&R OPC UA BrowsePath Finder")
-        self.geometry("900x605")
-        self.minsize(740, 520)
+        self.geometry("950x850")
+        self.minsize(740, 760)
         self.events = queue.Queue()
         self.endpoint = tk.StringVar(value="opc.tcp://127.0.0.1:4840")
         self.mode = tk.StringVar(value="None")
@@ -25,7 +25,11 @@ class App(tk.Tk):
         self.identity = tk.StringVar(value="Anonymous")
         self.username = tk.StringVar()
         self.password = tk.StringVar()
-        self.node_name = tk.StringVar()
+        self.commands = queue.Queue()
+        self.connected = False
+        self.nodes = {}
+        self.pending = set()
+        self.protocol("WM_DELETE_WINDOW", self._close)
         self.found_type = tk.StringVar()
         self.relative_path = tk.StringVar()
         self.status = tk.StringVar(value="Ready")
@@ -57,15 +61,15 @@ class App(tk.Tk):
         self._show_auth()
         ttk.Separator(main).pack(fill="x", pady=12)
         ttk.Label(main, text="Variable lookup", font=("Segoe UI", 14, "bold")).pack(anchor="w")
-        self._entry(main, "Node Name (exact BrowseName)", self.node_name)
         # Use a prominent native Tk button instead of the theme-dependent ttk style.
         self.go = tk.Button(
             main,
-            text="Connect, Browse & Retrieve",
+            text="Connect",
+            width=14,
             command=self._start,
-            bg="#0875C9",
+            bg="#FF8800",
             fg="white",
-            activebackground="#065A9B",
+            activebackground="#FF8800",
             activeforeground="white",
             font=("Segoe UI", 10, "bold"),
             relief="raised",
@@ -75,15 +79,41 @@ class App(tk.Tk):
             cursor="hand2",
         )
         self.go.pack(anchor="center", pady=(10, 8))
+        self.disconnect = tk.Button(
+            main,
+            text="Disconnect",
+            width=14,
+            command=self._disconnect,
+            state="disabled",
+            bg="#FF8800",
+            fg="white",
+            activebackground="#FF8800",
+            activeforeground="white",
+            font=("Segoe UI", 10, "bold"),
+            relief="raised",
+            borderwidth=2,
+            padx=18,
+            pady=10,
+            cursor="hand2",
+        )
+        self.disconnect.pack()
+        browser = ttk.Frame(main)
+        browser.pack(fill="both", expand=True, pady=6)
+        self.tree = ttk.Treeview(browser, columns=("kind",), selectmode="browse", height=9)
+        self.tree.heading("#0", text="Browse server — expand folders and select a variable")
+        self.tree.heading("kind", text="Node class")
+        self.tree.column("kind", width=110, stretch=False)
+        scroll = ttk.Scrollbar(browser, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        self.tree.pack(fill="both", expand=True)
+        self.tree.bind("<<TreeviewOpen>>", self._expand)
+        self.tree.bind("<<TreeviewSelect>>", self._select)
         self.bar = ttk.Progressbar(main, mode="indeterminate")
         self.bar.pack(fill="x", pady=(7, 3))
         ttk.Label(main, textvariable=self.status).pack(anchor="w")
         ttk.Separator(main).pack(fill="x", pady=12)
         ttk.Label(main, text="Result — OpcUa_any configuration", font=("Segoe UI", 14, "bold")).pack(anchor="w")
-        ttk.Label(main, text="Matching nodes — select by parent path (if multiple)").pack(anchor="w", pady=(8, 0))
-        self.match_list = ttk.Combobox(main, state="readonly")
-        self.match_list.pack(fill="x")
-        self.match_list.bind("<<ComboboxSelected>>", self._display_match)
         self._entry(main, "Detected B&R data type", self.found_type, readonly=True)
         ttk.Label(main, text="StartingNode (leave empty in OpcUa_any)").pack(anchor="w", pady=(5, 0))
         self._result_entry(main, "RelativePath (complete path from Root)", self.relative_path)
@@ -119,9 +149,6 @@ class App(tk.Tk):
         if not validate_endpoint(endpoint):
             messagebox.showerror("Invalid URL", "Use an endpoint such as opc.tcp://192.168.0.1:4840")
             return
-        if not self.node_name.get().strip():
-            messagebox.showerror("Node required", "Enter the exact BrowseName to search for.")
-            return
         if self.identity.get() == "Username" and not self.username.get():
             messagebox.showerror("Username required", "Please enter a username.")
             return
@@ -133,29 +160,61 @@ class App(tk.Tk):
             )
             return
         self.go.configure(state="disabled")
-        self.matches = []
-        self.namespace_mapping = {}
-        self.match_list.configure(values=[])
+        self.commands = queue.Queue()
+        self.nodes.clear()
+        self.pending.clear()
+        self.tree.delete(*self.tree.get_children())
         self.relative_path.set("")
         self.found_type.set("")
-        self.match_list.set("")
         self.status.set("Starting...")
         self.bar.start(12)
-        config = dict(endpoint=endpoint, mode=self.mode.get(), policy=self.policy.get(), identity=self.identity.get(), username=self.username.get(),
-                      password=self.password.get(), node_name=self.node_name.get().strip())
-        threading.Thread(target=self._worker, args=(config,), daemon=True).start()
+        config = dict(endpoint=endpoint, mode=self.mode.get(), policy=self.policy.get(),
+                      identity=self.identity.get(), username=self.username.get(), password=self.password.get())
+        threading.Thread(target=BrowserSession(config, self.commands, self.events).run,
+                         daemon=True).start()
 
-    def _worker(self, config):
-        try:
-            search_server(config, self.events)
-        except Exception as exc:
-            import traceback
-            traceback.print_exc()
-            self.events.put((
-                "error",
-                f"{type(exc).__name__}: {exc}\n\n"
-                "See terminal for the complete traceback.",
-            ))
+    def _disconnect(self):
+        self.connected = False
+        self.disconnect.configure(state="disabled")
+
+        # Clear the server browser immediately.
+        self.tree.delete(*self.tree.get_children())
+        self.nodes.clear()
+        self.pending.clear()
+
+        self.relative_path.set("")
+        self.found_type.set("")
+
+        self.commands.put(("disconnect", "", ""))
+        self.status.set("Disconnecting...")
+
+    def _close(self):
+        self.commands.put(("disconnect", "", ""))
+        self.destroy()
+
+    def _expand(self, event=None):
+        item = self.tree.focus()
+        self._load(item)
+
+    def _load(self, item):
+        data = self.nodes.get(item)
+        if not self.connected or not data or data.get("loaded") or item in self.pending:
+            return
+        self.pending.add(item)
+        self.status.set("Loading children...")
+        self.commands.put(("browse", item, data["nodeid"]))
+
+    def _select(self, event=None):
+        self.relative_path.set("")
+        self.found_type.set("")
+        selection = self.tree.selection()
+        if not self.connected or not selection:
+            return
+        item = selection[0]
+        data = self.nodes.get(item)
+        if data and data["kind"] == "Variable":
+            self.status.set("Reading variable data type...")
+            self.commands.put(("select", item, data["nodeid"]))
 
     def _drain(self):
         try:
@@ -184,26 +243,55 @@ class App(tk.Tk):
                         )
                     finally:
                         payload["signal"].set()
-                elif kind == "done":
+                elif kind == "connected":
+                    self.bar.stop()
+                    self.connected = True
+                    self.disconnect.configure(state="normal")
+                    self.namespace_uris, nodeid = payload
+                    root = self.tree.insert("", "end", text="Objects", values=("Object",), open=True)
+                    self.nodes[root] = dict(nodeid=nodeid, segments=ROOT_PREFIX, kind="Object", ancestors=(nodeid,))
+                    self._load(root)
+                elif kind == "children":
+                    item, children, errors = payload
+                    self.pending.discard(item)
+                    if not self.connected or item not in self.nodes:
+                        continue
+                    self.tree.delete(*self.tree.get_children(item))
+                    parent = self.nodes[item]
+                    parent["loaded"] = True
+                    for data in sorted(children, key=lambda d: (d["name"].casefold(), d["ns"])):
+                        # Suppress cycles on this path, retaining shared nodes under other parents.
+                        if data["nodeid"] in parent["ancestors"]:
+                            continue
+                        data["segments"] = parent["segments"] + ((data["ns"], data["name"]),)
+                        data["ancestors"] = parent["ancestors"] + (data["nodeid"],)
+                        child = self.tree.insert(item, "end", text=f'{data["ns"]}:{data["name"]}', values=(data["kind"],))
+                        self.nodes[child] = data
+                        self.tree.insert(child, "end", text="Expand to load...")
+                    self.status.set(f"Loaded {len(children)} nodes; {errors} unreadable. Select a variable.")
+                elif kind == "selected":
+                    item, dtype = payload
+                    if self.connected and self.tree.selection() == (item,):
+                        self.found_type.set(dtype)
+                        segments = self.nodes[item]["segments"]
+                        # Retain server namespace indexes; do not invent a new URI mapping.
+                        self.relative_path.set("/" + "/".join(
+                            f"{ns}:{escape_browse_name(name)}" for ns, name in segments))
+                        self.status.set("Variable selected. Path uses server namespace indexes; verify OpcUa_any namespace configuration.")
+                elif kind == "operation_error":
+                    action, item, error = payload
+                    self.pending.discard(item)
+                    self.status.set("Operation failed. Collapse and expand to retry.")
+                    messagebox.showerror("OPC UA error", error, parent=self)
+                elif kind == "disconnected":
+                    self.connected = False
+                    self.pending.clear()
                     self.bar.stop()
                     self.go.configure(state="normal")
-                    uris, matches, count, errors = payload
-                    self.matches = matches
-                    self.namespace_uris = uris
-                    # Namespace zero is defined by the OPC UA standard. Every other
-                    # namespace used in result paths is assigned a stable local index.
-                    used = sorted({ns for _, segments, _ in matches for ns, _ in segments if ns != 0})
-                    self.namespace_mapping = {ns: i + 1 for i, ns in enumerate(used)}
-                    self.match_list.configure(values=[
-                        f"Parent: /{'/'.join(n for _, n in segments[:-1]) or '(Objects)'}  |  Type: {dtype}"
-                        for nodeid, segments, dtype in matches
-                    ])
-                    if matches:
-                        self.match_list.current(0)
-                        self._display_match()
-                    self.status.set(f"Finished: {count} nodes inspected, {len(matches)} matches, {errors} unreadable nodes/edges")
-                    if not matches:
-                        messagebox.showinfo("Not found", "No variable with that BrowseName was found in the browsable Objects hierarchy.")
+                    self.disconnect.configure(state="disabled")
+                    self.relative_path.set("")
+                    self.found_type.set("")
+                    self.status.set("Disconnected")
                 elif kind == "error":
                     self.bar.stop()
                     self.go.configure(state="normal")
@@ -212,23 +300,6 @@ class App(tk.Tk):
         except queue.Empty:
             pass
         self.after(100, self._drain)
-
-    def _display_match(self, event=None):
-        index = self.match_list.current()
-        if index < 0 or index >= len(self.matches):
-            return
-        nodeid, segments, dtype = self.matches[index]
-        self.found_type.set(dtype)
-        # Include Root and Objects, with no StartingNode. Server namespace
-        # indexes are translated using the displayed B&R namespace URI mapping.
-        def relative_ns(server_ns):
-            if server_ns == 0:
-                return 0
-            return self.namespace_mapping[server_ns]
-
-        self.relative_path.set("/" + "/".join(
-            f"{relative_ns(ns)}:{escape_browse_name(name)}" for ns, name in segments
-        ))
 
 def resource_path(relative_path):
     if getattr(sys, "frozen", False):
