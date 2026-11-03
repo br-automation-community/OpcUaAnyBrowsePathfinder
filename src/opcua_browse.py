@@ -8,8 +8,8 @@ Secure modes require explicit certificate/trust configuration and are not silent
 from collections import deque
 from urllib.parse import urlsplit
 
-SECURITY_MODES = ["BestAvailable", "None", "Sign", "SignEncrypt"]
-SECURITY_POLICIES = ["BestAvailable", "None", "Basic128Rsa15", "Basic256", "Basic256Sha256", "Aes128_Sha256_RsaOaep"]
+SECURITY_MODES = ["None", "Sign", "SignEncrypt"]
+SECURITY_POLICIES = ["None", "Basic128Rsa15", "Basic256", "Basic256Sha256", "Aes128_Sha256_RsaOaep"]
 UA_TO_BR = {"Boolean": "BOOL", "Byte": "USINT", "SByte": "SINT", "UInt16": "UINT", "Int16": "INT", "UInt32": "UDINT", "Int32": "DINT", "Float": "REAL"}
 RESERVED = set("./:!#&<>")
 ROOT_PREFIX = ((0, "Root"), (0, "Objects"))

@@ -20,8 +20,8 @@ class App(tk.Tk):
         self.minsize(740, 520)
         self.events = queue.Queue()
         self.endpoint = tk.StringVar(value="opc.tcp://192.168.0.1:4840")
-        self.mode = tk.StringVar(value="BestAvailable")
-        self.policy = tk.StringVar(value="BestAvailable")
+        self.mode = tk.StringVar(value="None")
+        self.policy = tk.StringVar(value="None")
         self.identity = tk.StringVar(value="Anonymous")
         self.username = tk.StringVar()
         self.password = tk.StringVar()
@@ -125,13 +125,16 @@ class App(tk.Tk):
         if self.identity.get() == "Username" and not self.username.get():
             messagebox.showerror("Username required", "Please enter a username.")
             return
-        # V1 deliberately does not silently downgrade requested security.
-        if self.mode.get() not in ("None", "BestAvailable") or self.policy.get() not in ("None", "BestAvailable"):
-            messagebox.showerror("Secure channel not configured", "Secure OPC UA requires a client certificate and private key.\nThis prototype supports None/None only.")
-            return
+        # Secure OPC UA connections are not yet implemented.
+        # Only SecurityMessageMode=None and SecurityPolicy=None are supported.
         if self.mode.get() != "None" or self.policy.get() != "None":
-            messagebox.showerror("Choose explicit security", "BestAvailable negotiation is not yet implemented.\nFor a server permitting unsecured sessions, select None for both options.")
-            return
+            messagebox.showerror(
+            "Secure channel not configured",
+            "Secure OPC UA requires a client certificate and private key.\n"
+            "This version currently supports SecurityMessageMode=None "
+            "and SecurityPolicy=None only."
+        )
+        return
         self.go.configure(state="disabled")
         self.matches = []
         self.namespace_mapping = {}
