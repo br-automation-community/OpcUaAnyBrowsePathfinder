@@ -15,7 +15,7 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.iconbitmap(str(resource_path("assets/ASImage.ico")))
-        self.title("B&R OPC UA BrowsePath Finder")
+        self.title("OPC UA BrowsePath Finder")
         self.geometry("950x850")
         self.minsize(740, 760)
         self.events = queue.Queue()
@@ -118,7 +118,7 @@ class App(tk.Tk):
         ttk.Label(main, textvariable=self.status).pack(anchor="w")
         ttk.Separator(main).pack(fill="x", pady=12)
         ttk.Label(main, text="Result — OpcUa_any configuration", font=("Segoe UI", 14, "bold")).pack(anchor="w")
-        self._entry(main, "Detected B&R data type", self.found_type, readonly=True)
+        self._entry(main, "Detected IEC data type", self.found_type, readonly=True)
         ttk.Label(main, text="StartingNode (leave empty in OpcUa_any)").pack(anchor="w", pady=(5, 0))
         self._result_entry(main, "RelativePath (complete path from Root)", self.relative_path)
 
