@@ -109,21 +109,13 @@ def _trusted_certificate(config, events, endpoint):
         f'{config["policy"]}'
     )
 
-    old_fingerprint = known.get(identity)
+    trusted_fingerprints = known.get(identity, [])
 
-    # Block unexpected certificate replacement.
-    if (
-        old_fingerprint
-        and old_fingerprint != fingerprint
-    ):
-        raise RuntimeError(
-            "The OPC UA server certificate has changed.\n"
-            "Connection blocked for security reasons.\n"
-            "Verify the new certificate independently."
-        )
+    # Support entries saved by the previous version.
+    if isinstance(trusted_fingerprints, str):
+        trusted_fingerprints = [trusted_fingerprints]
 
-    # Request approval for an unknown certificate.
-    if not old_fingerprint:
+    if fingerprint not in trusted_fingerprints:
         response = {"decision": False}
         approved = threading.Event()
 
@@ -146,12 +138,10 @@ def _trusted_certificate(config, events, endpoint):
                 "Connection cancelled."
             )
 
-        store.parent.mkdir(
-            parents=True,
-            exist_ok=True,
-        )
+        store.parent.mkdir(parents=True, exist_ok=True)
 
-        known[identity] = fingerprint
+        trusted_fingerprints.append(fingerprint)
+        known[identity] = trusted_fingerprints
 
         store.write_text(
             json.dumps(known, indent=2),
